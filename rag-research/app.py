@@ -1,7 +1,15 @@
+import os
+
 import requests
 import streamlit as st
 
-API_BASE_URL = "http://localhost:8000"
+backend_url = None
+if hasattr(st, "secrets") and "BACKEND_URL" in st.secrets:
+    backend_url = st.secrets["BACKEND_URL"]
+else:
+    backend_url = os.environ.get("BACKEND_URL")
+
+API_BASE_URL = backend_url or "http://localhost:8000"
 
 st.title("Research Paper RAG")
 
