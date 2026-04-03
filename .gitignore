@@ -1,0 +1,5 @@
+rag-research/venv/
+rag-research/__pycache__/
+rag-research/.env
+*.env
+
