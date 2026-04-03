@@ -1,10 +1,11 @@
 fastapi
-uvicorn
+uvicorn[standard]
 pymupdf
 faiss-cpu
 sentence-transformers
 openai
+streamlit
 requests
 python-multipart
 python-dotenv
-numpy
+

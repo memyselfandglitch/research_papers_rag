@@ -4,15 +4,15 @@ import requests
 import streamlit as st
 
 backend_url = None
-try:
-    # `st.secrets` will raise `StreamlitSecretNotFoundError` if no local
-    # secrets are configured. So keep this optional.
-    backend_url = st.secrets.get("BACKEND_URL")
-except Exception:
-    backend_url = None
+# try:
+#     # `st.secrets` will raise `StreamlitSecretNotFoundError` if no local
+#     # secrets are configured. So keep this optional.
+#     backend_url = st.secrets.get("BACKEND_URL")
+# except Exception:
+#     backend_url = None
 
-if not backend_url:
-    backend_url = os.environ.get("BACKEND_URL")
+# if not backend_url:
+backend_url = os.environ.get("BACKEND_URL")
 
 API_BASE_URL = backend_url or "http://localhost:8000"
 
