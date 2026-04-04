@@ -1,7 +1,6 @@
 import os
-import json
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Dict, List
 
 import numpy as np
 from dotenv import load_dotenv
@@ -22,12 +21,8 @@ app.add_middleware(
 )
 
 # Lazy-loaded globals
-embedding_model = None
-reranker_model = None
 openai_client = None
-faiss_index = None
-
-index = None
+embedding_matrix = None
 chunks_store: List[str] = []
 metadata_store: List[Dict] = []
 
@@ -39,24 +34,6 @@ def health():
 
 
 # ------------------ MODELS ------------------
-def get_embedding_model():
-    global embedding_model
-    if embedding_model is None:
-        from sentence_transformers import SentenceTransformer
-        embedding_model = SentenceTransformer("BAAI/bge-small-en")
-    return embedding_model
-
-
-def get_reranker():
-    global reranker_model
-    if reranker_model is None:
-        from sentence_transformers import CrossEncoder
-        reranker_model = CrossEncoder("BAAI/bge-reranker-base")
-        # Optional lighter:
-        # reranker_model = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
-    return reranker_model
-
-
 def get_openai_client():
     global openai_client
     if openai_client is None:
@@ -112,42 +89,41 @@ def chunk_text_with_metadata(pages, chunk_size=500, overlap=100):
 
 # ------------------ EMBEDDINGS ------------------
 def embed_chunks(chunks):
-    model = get_embedding_model()
-    embeddings = model.encode(
-        chunks,
-        normalize_embeddings=True,
-        convert_to_numpy=True,
+    if not chunks:
+        return np.empty((0, 0), dtype="float32")
+
+    client = get_openai_client()
+    response = client.embeddings.create(
+        model=os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"),
+        input=chunks,
     )
-    return embeddings.astype("float32")
+    embeddings = [item.embedding for item in response.data]
+    return normalize_embeddings(np.array(embeddings, dtype="float32"))
 
 
-def create_index(embeddings):
-    import faiss  # lazy load
+def normalize_embeddings(embeddings: np.ndarray) -> np.ndarray:
+    if embeddings.size == 0:
+        return embeddings.astype("float32")
 
-    dim = embeddings.shape[1]
-    idx = faiss.IndexFlatIP(dim)
-    idx.add(embeddings)
-    return idx
+    norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+    norms[norms == 0] = 1.0
+    return (embeddings / norms).astype("float32")
 
 
 # ------------------ RETRIEVAL ------------------
 def retrieve(query, k=5):
-    global index
+    global embedding_matrix
 
-    if index is None:
+    if embedding_matrix is None or not chunks_store:
         raise HTTPException(status_code=400, detail="No document uploaded yet.")
 
-    model = get_embedding_model()
-    q_emb = model.encode(
-        [query],
-        normalize_embeddings=True,
-        convert_to_numpy=True,
-    ).astype("float32")
-
-    _, indices = index.search(q_emb, k)
+    query_embedding = embed_chunks([query])
+    scores = np.dot(embedding_matrix, query_embedding[0])
+    top_k = min(k, len(scores))
+    indices = np.argsort(scores)[::-1][:top_k]
 
     results = []
-    for idx in indices[0]:
+    for idx in indices:
         if idx < 0:
             continue
         results.append({
@@ -173,11 +149,15 @@ def multi_retrieve(queries, k=5):
 def rerank_chunks(query, chunks, top_n=8):
     if not chunks:
         return []
-    reranker = get_reranker()
-    pairs = [(query, c["text"]) for c in chunks]
-    scores = reranker.predict(pairs)
-    ranked = sorted(zip(chunks, scores), key=lambda x: x[1], reverse=True)
-    return [c for c, _ in ranked[:top_n]]
+
+    query_terms = set(re.findall(r"\w+", query.lower()))
+
+    def lexical_score(chunk):
+        chunk_terms = set(re.findall(r"\w+", chunk["text"].lower()))
+        return len(query_terms & chunk_terms)
+
+    ranked = sorted(chunks, key=lexical_score, reverse=True)
+    return ranked[:top_n]
 
 
 # ------------------ LLM ------------------
@@ -201,7 +181,7 @@ def expand_query(query, n_queries=5):
 # ------------------ API ------------------
 @app.post("/upload")
 async def upload(file: UploadFile):
-    global index, chunks_store, metadata_store
+    global embedding_matrix, chunks_store, metadata_store
 
     pdf_bytes = await file.read()
     if not pdf_bytes:
@@ -209,9 +189,10 @@ async def upload(file: UploadFile):
 
     pages = extract_pages(pdf_bytes)
     chunks, metas = chunk_text_with_metadata(pages)
+    if not chunks:
+        raise HTTPException(status_code=400, detail="No extractable text found in PDF")
 
-    embeddings = embed_chunks(chunks)
-    index = create_index(embeddings)
+    embedding_matrix = embed_chunks(chunks)
 
     chunks_store = chunks
     metadata_store = metas
@@ -221,7 +202,7 @@ async def upload(file: UploadFile):
 
 @app.get("/query")
 def query(q: str, k: int = 5):
-    if index is None:
+    if embedding_matrix is None:
         raise HTTPException(status_code=400, detail="No document uploaded yet.")
 
     expanded = expand_query(q)

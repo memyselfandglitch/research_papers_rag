@@ -1,8 +1,7 @@
 fastapi
 uvicorn
+streamlit
 pymupdf
-faiss-cpu
-sentence-transformers
 openai
 requests
 python-multipart
